@@ -8,6 +8,7 @@ from time import time
 # Set for reduced number of address from trace file
 DEBUG = False
 
+
 class Cache:
     def __init__(self, l: int, k: int, n: int):
         # N sets, K lines wide
@@ -15,7 +16,8 @@ class Cache:
         self.lru_queue = [deque() for _ in range(n)]
 
         # For each set(N), K lines that are L bytes wide
-        self.dirs = [[[False for _ in range(l)] for _ in range(k)] for _ in range(n)]
+        self.dirs = [[[False for _ in range(l)]
+                      for _ in range(k)] for _ in range(n)]
 
         self.tag_mask, self.set_mask, self.offset_mask = self.calc_masks(l, n)
         self.set_shift = int(log2(l))
@@ -23,6 +25,8 @@ class Cache:
 
         self.hits = 0
         self.misses = 0
+        self.dr_accesses = 0
+        self.dw_accesses = 0
 
     def calc_masks(self, l, n):
         offset = int(log2(l))
@@ -36,27 +40,36 @@ class Cache:
         return tag_mask, set_mask, offset_mask
 
     def read(self, address):
+        self.dr_accesses += 1
+
         offset = (address & self.offset_mask)
         set_num = (address & self.set_mask) >> self.set_shift
         tag = (address & self.tag_mask) >> self.tag_shift
 
         if tag not in self.sets[set_num]:
-            self.read_tag_miss(tag, set_num, offset)
+            self.tag_miss(tag, set_num, offset)
         else:
             tag_index = self.sets[set_num].index(tag)
             if not self.dirs[set_num][tag_index][offset]:
-                self.read_offset_miss(set_num, tag_index, offset)
+                self.offset_miss(set_num, tag_index, offset)
             else:
-                # Cache hit! Reshuffle LRU Queue to move tag back to beginning of the queue
-                try:
-                    self.lru_queue[set_num].remove(tag)
-                except ValueError:
-                    print('Unexpected: Tag was not in cache when it should\'ve been')
-                finally:
-                    self.lru_queue[set_num].append(tag)
-                    self.hits += 1
+                self.lru_reshuffle(set_num, tag)
 
-    def read_tag_miss(self, tag, set_num, offset):
+    def write(self, address):
+        self.dw_accesses += 1
+
+        offset = (address & self.offset_mask)
+        set_num = (address & self.set_mask) >> self.set_shift
+        tag = (address & self.tag_mask) >> self.tag_shift
+
+        if tag not in self.sets[set_num]:
+            self.tag_miss(tag, set_num, offset)
+        else:
+            tag_index = self.sets[set_num].index(tag)
+            self.dirs[set_num][tag_index][offset] = True
+            self.lru_reshuffle(set_num, tag)
+
+    def tag_miss(self, tag, set_num, offset):
         '''
         This method is called when a tag is not existent in a set.
         If there is room to spare in the set, the tag will be added, otherwise
@@ -77,7 +90,7 @@ class Cache:
             self.lru_queue[set_num].append(tag)
             self.misses += 1
 
-    def read_offset_miss(self, set_num, tag_index, offset):
+    def offset_miss(self, set_num, tag_index, offset):
         '''
         This method is called when a tag is resident in a set, but
         the offset into it's directory entry is empty.
@@ -88,27 +101,48 @@ class Cache:
         self.dirs[set_num][tag_index][offset] = True
         self.misses += 1
 
-    def write(self, address):
-        pass
+    def lru_reshuffle(self, set_num, tag):
+        '''
+        This method is called whenever a cache line has been accessed
+        and it is no longer the LRU value
+
+        The LRU Queue keeps the LRU item at the front of the queue
+        '''
+
+        try:
+            self.lru_queue[set_num].remove(tag)
+        except ValueError:
+            print('Unexpected: Tag was not in lru queue')
+        finally:
+            self.lru_queue[set_num].append(tag)
+            self.hits += 1
 
     def print_results(self):
+        print('Read Accesses: {}'.format(self.dr_accesses))
+        print('Write Accesses: {}'.format(self.dw_accesses))
         print('Hits: {}'.format(self.hits))
         print('Misses: {}'.format(self.misses))
-        print('Hit Rate: {}%'.format(self.hits / (self.hits + self.misses) * 100))
+        print(
+            'Hit Rate: {:.2f}%'.format(
+                self.hits / (self.dr_accesses + self.dw_accesses) * 100)
+        )
 
 
 def main():
     instruction_cache = Cache(16, 1, 1024)
     data_cache = Cache(16, 8, 256)
     trace = read_trace()
+
     start = time()
     analyse(trace, instruction_cache, data_cache)
     end = time()
+
     print('Execution time: {}ms'.format((end - start) * 1000))
     print("---Instruction Cache---")
     instruction_cache.print_results()
     print('---Data Cache---')
     data_cache.print_results()
+
 
 def read_trace():
     if DEBUG:
@@ -161,7 +195,8 @@ def analyse(trace, ir_cache, d_cache):
             elif access_type == 'DW':
                 d_cache.write(address)
             else:
-                raise ValueError('Unexpected: Access-type not None, but still invalid')
+                raise ValueError(
+                    'Unexpected: Access-type not None, but still invalid')
 
 
 if __name__ == '__main__':
