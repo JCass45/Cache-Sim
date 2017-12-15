@@ -4,6 +4,7 @@ import subprocess
 from math import log2
 from collections import deque
 from time import time
+from pprint import pprint
 
 # Set for reduced number of address from trace file
 DEBUG = False
@@ -39,8 +40,8 @@ class Cache:
 
         return tag_mask, set_mask, offset_mask
 
-    def read(self, address):
-        self.dr_accesses += 1
+    def read(self, address, burst_count):
+        self.dr_accesses += 1 + burst_count
 
         offset = (address & self.offset_mask)
         set_num = (address & self.set_mask) >> self.set_shift
@@ -52,11 +53,14 @@ class Cache:
             tag_index = self.sets[set_num].index(tag)
             if not self.dirs[set_num][tag_index][offset]:
                 self.offset_miss(set_num, tag_index, offset)
+                self.hits += burst_count
+                self.misses += 1
             else:
                 self.lru_reshuffle(set_num, tag)
+                self.hits += 1 + burst_count
 
-    def write(self, address):
-        self.dw_accesses += 1
+    def write(self, address, burst_count):
+        self.dw_accesses += 1 + burst_count
 
         offset = (address & self.offset_mask)
         set_num = (address & self.set_mask) >> self.set_shift
@@ -64,10 +68,13 @@ class Cache:
 
         if tag not in self.sets[set_num]:
             self.tag_miss(tag, set_num, offset)
+            self.hits += burst_count
+            self.misses += 1
         else:
             tag_index = self.sets[set_num].index(tag)
             self.dirs[set_num][tag_index][offset] = True
             self.lru_reshuffle(set_num, tag)
+            self.hits += 1 + burst_count
 
     def tag_miss(self, tag, set_num, offset):
         '''
@@ -86,9 +93,9 @@ class Cache:
         finally:
             # Insert the new tag into the cache line
             self.sets[set_num][new_tag_index] = tag
+            # Here we would go to MM and get the data
             self.dirs[set_num][new_tag_index][offset] = True
             self.lru_queue[set_num].append(tag)
-            self.misses += 1
 
     def offset_miss(self, set_num, tag_index, offset):
         '''
@@ -115,9 +122,9 @@ class Cache:
             print('Unexpected: Tag was not in lru queue')
         finally:
             self.lru_queue[set_num].append(tag)
-            self.hits += 1
 
     def print_results(self):
+        print('Total Accesses: {}'.format(self.dr_accesses + self.dw_accesses))
         print('Read Accesses: {}'.format(self.dr_accesses))
         print('Write Accesses: {}'.format(self.dw_accesses))
         print('Hits: {}'.format(self.hits))
@@ -146,26 +153,24 @@ def main():
 
 def read_trace():
     if DEBUG:
-        args = ['xxd', '-b', '-l', '10000', 'gcc1.trace']
+        args = ['xxd', '-b', '-c', '4', '-l', '10000', 'gcc1.trace']
     else:
-        args = ['xxd', '-b', 'gcc1.trace']
+        args = ['xxd', '-b', '-c', '4', 'gcc1.trace']
 
     raw_trace = subprocess.run(
         args=args,
         stdout=subprocess.PIPE
     ).stdout.decode().split('\n')
 
-    # List of lists containing 6 bytes each
-    split_trace = [row.split(' ')[1: 7] for row in raw_trace if row != '']
-    # Flattened list of lists
-    flat_trace = ''
-    for s in [item for sublist in split_trace for item in sublist]:
-        flat_trace += s
+    # List of lists containing 4 bytes each
+    split_trace = [row.split(' ')[1: 5] for row in raw_trace if row != '']
 
-    # Separate into 32 bit segments, leaving out every 2nd 32 bit segment
     trace = []
-    for i in range(0, len(flat_trace), 64):
-        trace.append(int(flat_trace[i:i + 32], 2))
+    for i in range(0, len(split_trace), 2):
+        s = ''
+        for byte in split_trace[i]:
+            s += byte
+        trace.append(int(s, 2))
 
     return trace
 
@@ -189,11 +194,11 @@ def analyse(trace, ir_cache, d_cache):
             burst_count = (mem & burst_mask) >> burst_shift
 
             if access_type == 'IR':
-                ir_cache.read(address)
+                ir_cache.read(address, burst_count)
             elif access_type == 'DR':
-                d_cache.read(address)
+                d_cache.read(address, burst_count)
             elif access_type == 'DW':
-                d_cache.write(address)
+                d_cache.write(address, burst_count)
             else:
                 raise ValueError(
                     'Unexpected: Access-type not None, but still invalid')
