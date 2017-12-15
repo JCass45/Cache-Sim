@@ -2,17 +2,20 @@
 
 import subprocess
 from math import log2
-from pprint import pprint
+from collections import deque
+from time import time
 
+# Set for reduced number of address from trace file
+DEBUG = False
 
-class Cache():
+class Cache:
     def __init__(self, l: int, k: int, n: int):
-        # N sets, K tags wide
+        # N sets, K lines wide
         self.sets = [[None for _ in range(k)] for _ in range(n)]
+        self.lru_queue = [deque() for _ in range(n)]
 
-        # For each set(N), K directories that are L bytes wide
-        self.directories = [
-            [[False for _ in range(l)] for _ in range(k)] for _ in range(n)]
+        # For each set(N), K lines that are L bytes wide
+        self.dirs = [[[False for _ in range(l)] for _ in range(k)] for _ in range(n)]
 
         self.tag_mask, self.set_mask, self.offset_mask = self.calc_masks(l, n)
         self.set_shift = int(log2(l))
@@ -41,10 +44,17 @@ class Cache():
             self.read_tag_miss(tag, set_num, offset)
         else:
             tag_index = self.sets[set_num].index(tag)
-            if not self.directories[set_num][tag_index][offset]:
+            if not self.dirs[set_num][tag_index][offset]:
                 self.read_offset_miss(set_num, tag_index, offset)
             else:
-                self.hits += 1
+                # Cache hit! Reshuffle LRU Queue to move tag back to beginning of the queue
+                try:
+                    self.lru_queue[set_num].remove(tag)
+                except ValueError:
+                    print('Unexpected: Tag was not in cache when it should\'ve been')
+                finally:
+                    self.lru_queue[set_num].append(tag)
+                    self.hits += 1
 
     def read_tag_miss(self, tag, set_num, offset):
         '''
@@ -55,12 +65,16 @@ class Cache():
 
         try:
             new_tag_index = self.sets[set_num].index(None)
-            self.sets[set_num][new_tag_index] = tag
-            self.directories[set_num][new_tag_index][offset] = True
         except ValueError:
-            print('Set {} is full!'.format(set_num))
-            # TODO: implement LRU
+            # Pop the LRU tag from the queue
+            evicted_tag = self.lru_queue[set_num].popleft()
+            evicted_tag_index = self.sets[set_num].index(evicted_tag)
+            new_tag_index = evicted_tag_index
         finally:
+            # Insert the new tag into the cache line
+            self.sets[set_num][new_tag_index] = tag
+            self.dirs[set_num][new_tag_index][offset] = True
+            self.lru_queue[set_num].append(tag)
             self.misses += 1
 
     def read_offset_miss(self, set_num, tag_index, offset):
@@ -71,23 +85,39 @@ class Cache():
         We simulate a read from main memory by setting the position to True
         '''
 
-        self.directories[set_num][tag_index][offset] = True
+        self.dirs[set_num][tag_index][offset] = True
         self.misses += 1
 
     def write(self, address):
         pass
+
+    def print_results(self):
+        print('Hits: {}'.format(self.hits))
+        print('Misses: {}'.format(self.misses))
+        print('Hit Rate: {}%'.format(self.hits / (self.hits + self.misses) * 100))
 
 
 def main():
     instruction_cache = Cache(16, 1, 1024)
     data_cache = Cache(16, 8, 256)
     trace = read_trace()
+    start = time()
     analyse(trace, instruction_cache, data_cache)
-
+    end = time()
+    print('Execution time: {}ms'.format((end - start) * 1000))
+    print("---Instruction Cache---")
+    instruction_cache.print_results()
+    print('---Data Cache---')
+    data_cache.print_results()
 
 def read_trace():
+    if DEBUG:
+        args = ['xxd', '-b', '-l', '10000', 'gcc1.trace']
+    else:
+        args = ['xxd', '-b', 'gcc1.trace']
+
     raw_trace = subprocess.run(
-        args=['xxd', '-b', '-l', '10000', 'gcc1.trace'],
+        args=args,
         stdout=subprocess.PIPE
     ).stdout.decode().split('\n')
 
@@ -113,19 +143,16 @@ def analyse(trace, ir_cache, d_cache):
     access_shift = 29
     address_mask = int('00000000011111111111111111111111', 2)
     access_lookup = {
-        1: 'DR',
         4: 'IR',
         6: 'DR',
         7: 'DW'
     }
 
     for mem in trace:
-        access_thing = (mem & access_mask) >> access_shift
         access_type = access_lookup.get((mem & access_mask) >> access_shift)
         if access_type:
             address = mem & address_mask
             burst_count = (mem & burst_mask) >> burst_shift
-            print(access_type)
 
             if access_type == 'IR':
                 ir_cache.read(address)
@@ -134,11 +161,7 @@ def analyse(trace, ir_cache, d_cache):
             elif access_type == 'DW':
                 d_cache.write(address)
             else:
-                raise ValueError('access-type not None, but still invalid')
-        elif access_thing == 1:
-            pass
-        else:
-            print('Non cache-related access type')
+                raise ValueError('Unexpected: Access-type not None, but still invalid')
 
 
 if __name__ == '__main__':
