@@ -1,2 +1,5 @@
 venv
 .vscode
+.~lock.report.odt#
+code.md
+code.pdf

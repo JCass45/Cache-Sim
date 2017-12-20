@@ -149,11 +149,12 @@ def main():
     instruction_cache.print_results()
     print('---Data Cache---')
     data_cache.print_results()
+    pass
 
 
 def read_trace():
     if DEBUG:
-        args = ['xxd', '-b', '-c', '4', '-l', '10000', 'gcc1.trace']
+        args = ['xxd', '-b', '-c', '4', '-l', '1000000', 'gcc1.trace']
     else:
         args = ['xxd', '-b', '-c', '4', 'gcc1.trace']
 
